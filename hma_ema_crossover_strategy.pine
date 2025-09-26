@@ -1,0 +1,201 @@
+//@version=5
+strategy("HMA-EMA Crossover Strategy with Dynamic Position Sizing", 
+         shorttitle="HMA-EMA Strategy", 
+         overlay=true, 
+         initial_capital=10000, 
+         default_qty_type=strategy.percent_of_equity, 
+         commission_type=strategy.commission.percent, 
+         commission_value=0.1)
+
+// =============================================================================
+// INPUT PARAMETERS
+// =============================================================================
+
+// Moving Average Parameters
+hma_short_length = input.int(20, title="Short HMA Length (for slope calculation)", minval=1)
+hma_long_length = input.int(50, title="Long HMA Length (entry signal)", minval=1)
+ema_length = input.int(200, title="EMA Length", minval=1)
+
+// ADX Parameters
+adx_length = input.int(14, title="ADX Length", minval=1)
+adx_threshold = input.float(25.0, title="ADX Threshold for Strong Trend", minval=0)
+
+// Position Sizing Parameters
+base_position_size = input.float(10.0, title="Base Position Size (%)", minval=1, maxval=100)
+max_position_size = input.float(25.0, title="Maximum Position Size (%)", minval=1, maxval=100)
+
+// Risk Management Parameters
+atr_length = input.int(14, title="ATR Length", minval=1)
+atr_multiplier = input.float(2.0, title="ATR Multiplier for Trailing Stop", minval=0.1)
+
+// Profit Taking Parameters
+profit_1 = input.float(5.0, title="First Profit Target (%)", minval=0.1)
+profit_2 = input.float(10.0, title="Second Profit Target (%)", minval=0.1)
+profit_3 = input.float(15.0, title="Third Profit Target (%)", minval=0.1)
+profit_4 = input.float(20.0, title="Fourth Profit Target (%)", minval=0.1)
+
+profit_qty_1 = input.float(25.0, title="First Profit Taking Quantity (%)", minval=1, maxval=100)
+profit_qty_2 = input.float(25.0, title="Second Profit Taking Quantity (%)", minval=1, maxval=100)
+profit_qty_3 = input.float(25.0, title="Third Profit Taking Quantity (%)", minval=1, maxval=100)
+profit_qty_4 = input.float(25.0, title="Fourth Profit Taking Quantity (%)", minval=1, maxval=100)
+
+// =============================================================================
+// INDICATOR CALCULATIONS
+// =============================================================================
+
+// Hull Moving Average calculation
+hma_short = ta.hma(close, hma_short_length)
+hma_long = ta.hma(close, hma_long_length)
+ema = ta.ema(close, ema_length)
+
+// HMA Slope calculation (trend strength indicator)
+hma_slope = hma_short - hma_short[1]
+hma_slope_normalized = hma_slope / ta.atr(5) * 100
+
+// ADX calculation for trend strength
+[di_plus, di_minus, adx] = ta.dmi(adx_length, adx_length)
+
+// ATR for trailing stop
+atr = ta.atr(atr_length)
+
+// =============================================================================
+// POSITION SIZING LOGIC
+// =============================================================================
+
+// Calculate trend strength factor (0 to 1)
+adx_factor = math.min(adx / 50, 1.0) // Normalize ADX to 0-1 scale
+slope_factor = math.min(math.abs(hma_slope_normalized) / 2.0, 1.0) // Normalize slope
+trend_strength = (adx_factor + slope_factor) / 2
+
+// Dynamic position size based on trend strength
+dynamic_position_size = base_position_size + (max_position_size - base_position_size) * trend_strength
+
+// =============================================================================
+// ENTRY CONDITIONS
+// =============================================================================
+
+// Entry condition: HMA crosses above EMA with sufficient trend strength
+long_condition = ta.crossover(hma_long, ema) and adx > adx_threshold and hma_slope > 0
+
+// =============================================================================
+// EXIT CONDITIONS AND RISK MANAGEMENT
+// =============================================================================
+
+var float trailing_stop = na
+var float entry_price = na
+var bool profit_1_taken = false
+var bool profit_2_taken = false
+var bool profit_3_taken = false
+var bool profit_4_taken = false
+
+// Entry logic
+if long_condition and strategy.position_size == 0
+    entry_price := close
+    trailing_stop := close - atr * atr_multiplier
+    profit_1_taken := false
+    profit_2_taken := false
+    profit_3_taken := false
+    profit_4_taken := false
+    strategy.entry("Long", strategy.long, qty=dynamic_position_size)
+
+// Update trailing stop
+if strategy.position_size > 0
+    new_stop = close - atr * atr_multiplier
+    trailing_stop := math.max(trailing_stop, new_stop)
+
+// Profit taking logic
+if strategy.position_size > 0 and not na(entry_price)
+    profit_pct = (close - entry_price) / entry_price * 100
+    
+    // First profit target
+    if profit_pct >= profit_1 and not profit_1_taken
+        strategy.close("Long", qty_percent=profit_qty_1, comment="Profit 1")
+        profit_1_taken := true
+    
+    // Second profit target
+    if profit_pct >= profit_2 and not profit_2_taken
+        strategy.close("Long", qty_percent=profit_qty_2, comment="Profit 2")
+        profit_2_taken := true
+    
+    // Third profit target
+    if profit_pct >= profit_3 and not profit_3_taken
+        strategy.close("Long", qty_percent=profit_qty_3, comment="Profit 3")
+        profit_3_taken := true
+    
+    // Fourth profit target
+    if profit_pct >= profit_4 and not profit_4_taken
+        strategy.close("Long", qty_percent=profit_qty_4, comment="Profit 4")
+        profit_4_taken := true
+
+// Trailing stop exit
+if strategy.position_size > 0 and close <= trailing_stop
+    strategy.close("Long", comment="Trailing Stop")
+
+// =============================================================================
+// PLOTTING
+// =============================================================================
+
+// Plot moving averages
+plot(hma_long, color=color.blue, linewidth=2, title="HMA 50")
+plot(ema, color=color.red, linewidth=2, title="EMA 200")
+plot(hma_short, color=color.orange, linewidth=1, title="HMA Short (Slope)")
+
+// Plot entry signals
+plotshape(long_condition, style=shape.triangleup, location=location.belowbar, 
+          color=color.green, size=size.normal, title="Long Entry")
+
+// Plot trailing stop
+plot(strategy.position_size > 0 ? trailing_stop : na, color=color.red, 
+     style=plot.style_stepline, linewidth=1, title="Trailing Stop")
+
+// Plot profit levels
+profit_1_price = strategy.position_size > 0 and not na(entry_price) ? entry_price * (1 + profit_1/100) : na
+profit_2_price = strategy.position_size > 0 and not na(entry_price) ? entry_price * (1 + profit_2/100) : na
+profit_3_price = strategy.position_size > 0 and not na(entry_price) ? entry_price * (1 + profit_3/100) : na
+profit_4_price = strategy.position_size > 0 and not na(entry_price) ? entry_price * (1 + profit_4/100) : na
+
+plot(profit_1_price, color=color.yellow, style=plot.style_circles, linewidth=1, title="Profit 1")
+plot(profit_2_price, color=color.yellow, style=plot.style_circles, linewidth=1, title="Profit 2")
+plot(profit_3_price, color=color.yellow, style=plot.style_circles, linewidth=1, title="Profit 3")
+plot(profit_4_price, color=color.yellow, style=plot.style_circles, linewidth=1, title="Profit 4")
+
+// =============================================================================
+// TABLE FOR STRATEGY INFORMATION
+// =============================================================================
+
+if barstate.islast
+    var table info_table = table.new(position.top_right, 2, 8, bgcolor=color.white, border_width=1)
+    
+    table.cell(info_table, 0, 0, "Metric", text_color=color.black, bgcolor=color.gray)
+    table.cell(info_table, 1, 0, "Value", text_color=color.black, bgcolor=color.gray)
+    
+    table.cell(info_table, 0, 1, "ADX", text_color=color.black)
+    table.cell(info_table, 1, 1, str.tostring(math.round(adx, 2)), text_color=color.black)
+    
+    table.cell(info_table, 0, 2, "HMA Slope", text_color=color.black)
+    table.cell(info_table, 1, 2, str.tostring(math.round(hma_slope_normalized, 4)), text_color=color.black)
+    
+    table.cell(info_table, 0, 3, "Trend Strength", text_color=color.black)
+    table.cell(info_table, 1, 3, str.tostring(math.round(trend_strength * 100, 2)) + "%", text_color=color.black)
+    
+    table.cell(info_table, 0, 4, "Position Size", text_color=color.black)
+    table.cell(info_table, 1, 4, str.tostring(math.round(dynamic_position_size, 2)) + "%", text_color=color.black)
+    
+    table.cell(info_table, 0, 5, "ATR", text_color=color.black)
+    table.cell(info_table, 1, 5, str.tostring(math.round(atr, 4)), text_color=color.black)
+    
+    table.cell(info_table, 0, 6, "Current Position", text_color=color.black)
+    table.cell(info_table, 1, 6, strategy.position_size > 0 ? "Long" : "None", text_color=color.black)
+    
+    table.cell(info_table, 0, 7, "Entry Price", text_color=color.black)
+    table.cell(info_table, 1, 7, strategy.position_size > 0 ? str.tostring(math.round(entry_price, 4)) : "N/A", text_color=color.black)
+
+// =============================================================================
+// ALERTS
+// =============================================================================
+
+alertcondition(long_condition, title="Long Entry Signal", 
+               message="HMA crossed above EMA with strong trend - Long entry signal")
+
+alertcondition(strategy.position_size > 0 and close <= trailing_stop, title="Trailing Stop Hit", 
+               message="Trailing stop hit - Position closed")
