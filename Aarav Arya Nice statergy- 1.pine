@@ -1,0 +1,194 @@
+//@version=6
+strategy("Strategy Version 1.2",
+     overlay=true,
+     initial_capital=1000,
+     default_qty_type=strategy.cash,
+     default_qty_value=1000,
+     calc_on_every_tick=true,
+     commission_type=strategy.commission.percent,
+     commission_value=0.1)
+
+// === INPUTS ===
+hmaLen        = input.int(50, "HMA Length")
+emaLen        = input.int(200, "EMA Length")
+shortHmaLen   = input.int(20, "Short HMA (trend strength)")
+adxLen        = input.int(14, "ADX Length (Wilder)")
+rsiLen        = input.int(14, "RSI Length")         // optional filter
+atrLen        = input.int(14, "ATR Length")
+atrMult       = input.float(2.0, "ATR Stop Multiplier")
+drawdownTight = input.float(0.10, "Tighten Stop if DD > 10%")
+cooldownBars  = input.int(15, "Bars to wait after exit")
+rsiThreshold  = input.int(55, "RSI Threshold (optional filter)")
+partialMinPct = input.float(50, "Minimum Partial Entry/Exit %")
+maxHoldBars   = input.int(80, "Max Bars Hold")
+
+// profit lock levels (incremental partial exits)
+profitLock1   = input.float(0.02, "Profit Lock 1 (2%)")
+profitLock2   = input.float(0.04, "Profit Lock 2 (4%)")
+profitLock3   = input.float(0.06, "Profit Lock 3 (6%)")
+profitLock4   = input.float(0.08, "Profit Lock 4 (8%)")
+
+// === HELPERS ===
+// calculate integer qty from % of equity
+qtyToTrade(percent) =>
+    // guard against zero price
+    price = close == 0 ? 1e-8 : close
+    math.floor(strategy.equity * percent / 100 / price)
+
+// === CUSTOM ADX (Wilder's smoothing) ===
+// returns ADX value (0..100)
+f_adx(len) =>
+    // directional moves
+    up = high - high[1]
+    down = low[1] - low
+    plusDMraw = (up > down and up > 0) ? up : 0.0
+    minusDMraw = (down > up and down > 0) ? down : 0.0
+    // True Range (Wilder TR)
+    tr = math.max(high - low, math.max(math.abs(high - close[1]), math.abs(low - close[1])))
+    // Wilder smoothing via rma
+    atrW = ta.rma(tr, len)
+    plusDM = ta.rma(plusDMraw, len)
+    minusDM = ta.rma(minusDMraw, len)
+    // avoid division by zero
+    atrSafe = atrW == 0 ? 1e-8 : atrW
+    plusDI = 100.0 * (plusDM / atrSafe)
+    minusDI = 100.0 * (minusDM / atrSafe)
+    sum = plusDI + minusDI
+    dx = sum == 0 ? 0.0 : 100.0 * math.abs((plusDI - minusDI) / sum)
+    adxVal = ta.rma(dx, len)
+    adxVal
+
+// === INDICATORS ===
+hma_50 = ta.hma(close, hmaLen)
+hma_short = ta.hma(close, shortHmaLen)
+ema_200 = ta.ema(close, emaLen)
+rsi = ta.rsi(close, rsiLen)
+atr = ta.atr(atrLen)
+adxVal = f_adx(adxLen)
+
+// === SIGNALS & STRENGTH ===
+hmaCrossUp   = ta.crossover(hma_50, ema_200)
+hmaCrossDown = ta.crossunder(hma_50, ema_200)
+hmaDown      = hma_50 < hma_50[1]
+hmaSlope     = hma_50 - hma_50[5]          // longer slope measure
+hmaShortSlope= hma_short - hma_short[3]   // short-hma slope
+
+// === PROBABILITY / SIZE BUCKETS (based on ADX + short-HMA) ===
+// High confidence: ADX strong and short HMA aligned with trend
+isProbable = (adxVal > 25) and (hmaShortSlope > 0) and (hma_50 > ema_200)
+isUncertain = (adxVal >= 20 and adxVal <= 25) or ((hmaShortSlope > 0) and (hma_50 > ema_200))
+isLowProb = not (isProbable or isUncertain)
+
+// map to percentages: 50 / 80 / 100
+probPct() =>
+    isProbable ? 100.0 : (isUncertain ? 80.0 : 50.0)
+
+// optional additional filter: RSI must be above threshold to allow entry
+rsiOK = rsi > rsiThreshold
+
+// === RISK / STATE VARIABLES ===
+var int entryBar = na
+var float entryPrice = na
+var float stopLevel = na
+var float trailStop = na
+var float peakEquity = strategy.equity
+var int lastExitBar = na
+
+// update peak equity
+peakEquity := math.max(peakEquity, strategy.equity)
+dd = (peakEquity - strategy.equity) / (peakEquity == 0 ? 1e-8 : peakEquity)
+
+// cooldown check
+canTradeNow = na(lastExitBar) or (bar_index - lastExitBar > cooldownBars)
+
+// ENTRY CONDITIONS (allow re-entry when HMA turns up and no position)
+enterOnCross  = hmaCrossUp and canTradeNow and rsiOK and strategy.position_size == 0
+enterOnTurnUp = (hma_50 > ema_200) and (hma_50 > hma_50[1]) and canTradeNow and rsiOK and strategy.position_size == 0
+
+if enterOnCross or enterOnTurnUp
+    pct = probPct()
+    qty = qtyToTrade(pct)
+    if qty > 0
+        strategy.entry("Long", strategy.long, qty=qty)
+        entryBar := bar_index
+        entryPrice := close
+        stopLevel := close - atr * atrMult
+        trailStop := stopLevel
+
+// === EXIT / TRAILING / PARTIAL EXITS ===
+if strategy.position_size > 0
+    heldBars = bar_index - nz(entryBar, bar_index)
+    // tighten stop if big equity drawdown exists
+    baseStop = close - atr * atrMult
+    stopLevel := dd > drawdownTight ? close - atr * (atrMult * 0.5) : baseStop
+    // update trail stop (locks profits as price moves up)
+    trailStop := math.max(nz(trailStop, stopLevel), close - atr)
+    effectiveStop = math.max(stopLevel, trailStop)
+
+    // partial profit exits: use profit= price units relative to entryPrice
+    profitPrice1 = entryPrice * (1 + profitLock1)
+    profitPrice2 = entryPrice * (1 + profitLock2)
+    profitPrice3 = entryPrice * (1 + profitLock3)
+    profitPrice4 = entryPrice * (1 + profitLock4)
+
+    // For partial exits we compute qty based on desired percent of equity at the moment.
+    // This is conservative: partial qty is computed as percent of CURRENT equity converted to qty.
+    partialQty = qtyToTrade(partialMinPct)
+
+    if close >= profitPrice1
+        strategy.exit("Partial1", from_entry="Long", qty=partialQty, profit=profitPrice1, comment="Partial 2%")
+    if close >= profitPrice2
+        strategy.exit("Partial2", from_entry="Long", qty=partialQty, profit=profitPrice2, comment="Partial 4%")
+    if close >= profitPrice3
+        strategy.exit("Partial3", from_entry="Long", qty=partialQty, profit=profitPrice3, comment="Partial 6%")
+    if close >= profitPrice4
+        strategy.exit("Partial4", from_entry="Long", qty=partialQty, profit=profitPrice4, comment="Partial 8%")
+
+    // Hard exit rules
+    if hmaDown and heldBars > 5
+        strategy.close("Long", comment="HMA Falling Exit")
+        lastExitBar := bar_index
+        // reset
+        entryBar := na
+        entryPrice := na
+        stopLevel := na
+        trailStop := na
+    else if hmaCrossDown
+        strategy.close("Long", comment="HMA < EMA Exit")
+        lastExitBar := bar_index
+        entryBar := na
+        entryPrice := na
+        stopLevel := na
+        trailStop := na
+    else if heldBars >= maxHoldBars
+        strategy.close("Long", comment="Max Hold Exit")
+        lastExitBar := bar_index
+        entryBar := na
+        entryPrice := na
+        stopLevel := na
+        trailStop := na
+    else
+        // regular ATR stop exit (qty equals some portion of current equity to reduce volatility)
+        // use partialMinPct to determine qty for stop exit so that we don't always close full position
+        stopQty = qtyToTrade(partialMinPct)
+        if not na(effectiveStop)
+            strategy.exit("StopExit", from_entry="Long", stop=effectiveStop, qty=stopQty)
+
+// when position closed, ensure cooldown starts
+if strategy.position_size == 0 and strategy.position_size[1] > 0
+    lastExitBar := bar_index
+    entryBar := na
+    entryPrice := na
+    stopLevel := na
+    trailStop := na
+
+// === PLOTS for visualization ===
+plot(hma_50, "HMA 50", color=color.blue, linewidth=2)
+plot(hma_short, "HMA Short", color=color.teal, linewidth=1)
+plot(ema_200, "EMA 200", color=color.red, linewidth=2)
+plot(stopLevel, "Stop Level", color=color.orange)
+plot(trailStop, "Trail Stop", color=color.maroon)
+plot(adxVal, "ADX (custom)", color=color.green, linewidth=1)
+hline(20, "ADX 20", color=color.gray)
+hline(25, "ADX 25", color=color.gray)
+plot(rsi, "RSI 14", color=color.purple)
