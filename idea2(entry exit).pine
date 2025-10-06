@@ -1,0 +1,39 @@
+//@version=6
+strategy("50/200 HMA with Early Exit and Re-Entry", 
+     overlay=true, 
+     initial_capital=1000,                // Starting balance = $1000
+     default_qty_type=strategy.percent_of_equity, 
+     default_qty_value=100)               // Use 100% of equity per trade
+
+// === Inputs ===
+hmaFastLen = input.int(50, "Fast HMA length", minval=1)
+hmaSlowLen = input.int(200, "Slow HMA length", minval=1)
+
+// === HMAs ===
+hma_fast = ta.hma(close, hmaFastLen)
+hma_slow = ta.hma(close, hmaSlowLen)
+
+// === Signals ===
+bullCross = ta.crossover(hma_fast, hma_slow)     // bullish crossover → entry
+bearCross = ta.crossunder(hma_fast, hma_slow)    // bearish crossover → exit
+
+fastDown  = hma_fast < hma_fast[1]               // fast HMA turning downward
+fastUp    = hma_fast > hma_fast[1]               // fast HMA turning upward
+
+// === Entry conditions ===
+enterOnCross   = bullCross
+enterOnTurnUp  = fastUp and hma_fast > hma_slow and strategy.position_size == 0
+
+if (enterOnCross or enterOnTurnUp)
+    strategy.entry("Long", strategy.long)
+
+// === Exit conditions ===
+if strategy.position_size > 0
+    if bearCross
+        strategy.close("Long", comment="Bearish Cross Exit")
+    else if fastDown
+        strategy.close("Long", comment="Fast HMA Falling Exit")
+
+// === Plots ===
+plot(hma_fast, title="HMA 50", color=color.blue, linewidth=2)
+plot(hma_slow, title="HMA 200", color=color.red, linewidth=2)
