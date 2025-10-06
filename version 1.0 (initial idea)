@@ -1,0 +1,31 @@
+//@version=6
+strategy("HMA 50 / EMA 50 Crossover", 
+     overlay=true, 
+     initial_capital=1000,                
+     default_qty_type=strategy.percent_of_equity, 
+     default_qty_value=100)
+
+// === Inputs ===
+hmaLen = input.int(50, "HMA Length", minval=1)
+emaLen = input.int(50, "EMA Length", minval=1)
+
+// === Indicators ===
+hma_50 = ta.hma(close, hmaLen)
+ema_50 = ta.ema(close, emaLen)
+
+// === Crossover Signals ===
+hmaAboveEMA = ta.crossover(hma_50, ema_50)   // Buy signal
+hmaBelowEMA = ta.crossunder(hma_50, ema_50)  // Optional exit signal
+
+// === Entry Condition ===
+if hmaAboveEMA
+    strategy.entry("Long", strategy.long, comment="HMA > EMA Entry")
+
+// === Exit Condition ===
+if strategy.position_size > 0
+    if hmaBelowEMA
+        strategy.close("Long", comment="HMA < EMA Exit")
+
+// === Plots ===
+plot(hma_50, title="HMA 50", color=color.blue, linewidth=2)
+plot(ema_50, title="EMA 50", color=color.red, linewidth=2)
