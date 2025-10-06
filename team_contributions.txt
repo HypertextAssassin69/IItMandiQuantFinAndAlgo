@@ -1,0 +1,12 @@
+Team Contributions
+Aarav Arya - Strategy & Implementation
+
+Aarav defined the core trading logic and rules for the strategy. He guided AI tools (ChatGPT/Gemini) to generate the Pine Script code and then worked on refining and implementing the final version for testing.
+
+Tarun Tiwari - Research & Analysis
+
+Tarun researched various technical indicators to find the best fit for the strategy's goals. He advised on using the HMA for responsiveness and the ADX for trend strength, providing the analytical basis for the code.
+
+Krish Jain - Presentation & Documentation
+
+Krish was responsible for creating the presentation to explain the project. He translated the complex code and trading rules into clear visuals and straightforward explanations for the audience.
